@@ -11,7 +11,7 @@ Your_Project_Folder/
 3. Copy your input data files to the Data directory.
 4. Install required packages:
 
-python -m pip install numpy scipy SimpleITK psutil matplotlib
+python -m pip install numpy scipy SimpleITK psutil matplotlib scikit-image
 
 5. Create a new configuration file on the new PC by running:
 
@@ -27,5 +27,30 @@ python brain_shape_analyzer.py run my_config.json
 
 The JSON file contains machine-specific paths, so it's not directly transferable between computers. This approach of regenerating the configuration ensures that all paths are correct for the new environment.
 
+CHANGES, NOVEMBER 2026 (branch density-map-fixes)
+-------------------------------------------------
+Step 1 (the average, Result_defImage.nii) is unchanged. Step 2 (sulci -> average, density maps) was fixed:
 
+1. Average surface. Result_averageSurf.vtk is now the TRUE average surface, built from the average image
+   itself (the middle of its blurred surface shell). Before, it was the reference specimen's surface
+   (ref_surface_file) moved with the deformation field of the FIRST specimen in the list, i.e. of the wrong
+   specimen. The .vtk density maps (Result_DefPoints_Label_<n>.vtk) are painted onto this true surface.
+   The density maps themselves (Result_DefPoints_Label_<n>.nii) are unchanged.
+2. Every specimen's deformation field is saved: Results/fields/<specimen>_field.npz (~230 MB each).
+   Anything on a specimen (vessels, landmarks, new curves) can then be moved onto the average later
+   without registering again. A run that stops can be started again: saved fields are reused.
+3. Every specimen's sulci and endocast surface moved onto the average are saved:
+   Results/specimens/<specimen>_sulci_on_average.csv and Results/specimens/<specimen>_surface_on_average.vtk.
+   The surface comes from the specimen's image, or from "input_surface_files" in the config if given
+   (one .vtk per specimen, in the image frame, same order as the images).
+4. ref_surface_file is optional. If given, it is moved with ITS OWN specimen's field (matched by file
+   name, e.g. Pp_F_M3_13201_OK.vtk <-> Pp_F_M3_13201_OK.nii) and saved as Result_refSurf_on_average.vtk.
+5. Specimens can be registered at the same time: config "num_workers" (on Curta: the CPUs given to the job).
+6. All Step 2 outputs go to output_dir (before: the folder the program was started from).
+7. The registration uses much less memory (same arithmetic, done in slices; tested to give identical
+   results). The specimens' max / mean displacement in the log match the February 2026 Pan run exactly.
 
+New config keys (all optional): "num_workers", "input_surface_files", "surface_threshold" (default 8.0;
+lowered automatically if a specimen's surface shell has a gap).
+New package needed: scikit-image   (python -m pip install scikit-image)
+DEFAULT for "num_workers": all available CPUs minus one (Step 1 was already parallel; Step 2 now is too).

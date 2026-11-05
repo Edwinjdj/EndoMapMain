@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import SimpleITK as sitk
+import scipy.ndimage as scim
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -152,3 +153,63 @@ class SurfaceOperations:
         except Exception as e:
             logger.error(f"Error in set_values_to_vtk_surf: {str(e)}")
             raise
+
+    @staticmethod
+    def surface_from_image(image: np.ndarray, threshold: float = 8.0, smooth_sigma: float = 1.0):
+        """
+        Build a closed surface from an endocast image of this pipeline (Nov 2026).
+
+        The images (specimens and the average Result_defImage.nii) are a blurred copy of the endocast
+        surface: bright on the surface, ~0 inside and outside. The surface is placed in the MIDDLE of
+        that bright shell: shell = image > threshold; inside = the cavity enclosed by the shell;
+        phi = (distance to inside) - (distance to outside); surface = phi = 0 (marching cubes).
+
+        Returns:
+            vertices (voxel index coordinates, float), faces (int, triangles)
+        """
+        from skimage.measure import marching_cubes
+        # If the shell has a gap at this threshold (no inside found), try lower thresholds: the blur is
+        # symmetric around the surface, so the middle of the shell hardly moves with the threshold.
+        for thr in (threshold, threshold * 0.75, threshold * 0.6, threshold * 0.4, threshold * 0.25):
+            shell = image > thr
+            filled = scim.binary_fill_holes(shell)
+            cavity = filled & ~shell
+            if cavity.sum() > 0.1 * filled.sum():
+                break
+        else:
+            raise ValueError("surface_from_image: the bright shell is not closed (no inside found) "
+                             f"even at threshold {threshold * 0.25:.2f}")
+        if thr != threshold:
+            logger.info(f"surface_from_image: shell not closed at {threshold}, used threshold {thr:.2f}")
+        outside = ~filled
+        phi = (scim.distance_transform_edt(~cavity) - scim.distance_transform_edt(~outside)).astype(np.float32)
+        if smooth_sigma > 0:
+            phi = scim.gaussian_filter(phi, smooth_sigma)
+        verts, faces, _, _ = marching_cubes(phi, 0.0)
+        return verts, faces
+
+    @staticmethod
+    def write_vtk_surface(output_vtk_file: str, verts: np.ndarray, faces: np.ndarray,
+                          scalars: Optional[np.ndarray] = None,
+                          im_center_x: float = 0, im_center_y: float = 0, im_center_z: float = 0) -> None:
+        """
+        Write a triangle surface as legacy ASCII VTK, in the same layout the rest of this module reads
+        (one point per line, POLYGONS, then POINT_DATA scalars). Vertices are given in voxel index
+        coordinates and written as index - im_center (the pipeline's surface convention).
+        """
+        os.makedirs(os.path.dirname(os.path.abspath(output_vtk_file)), exist_ok=True)
+        P = np.asarray(verts, float) - np.array([im_center_x, im_center_y, im_center_z])
+        if scalars is None:
+            scalars = np.zeros(len(P))
+        with open(output_vtk_file, 'w') as f:
+            f.write("# vtk DataFile Version 3.0\nvtk output\nASCII\nDATASET POLYDATA\n")
+            f.write(f"POINTS {len(P)} float\n")
+            for x, y, z in P:
+                f.write(f"{x} {y} {z}\n")
+            f.write(f"POLYGONS {len(faces)} {4 * len(faces)}\n")
+            for a, b, c in faces:
+                f.write(f"3 {a} {b} {c}\n")
+            f.write(f"POINT_DATA {len(P)}\nSCALARS scalars double\nLOOKUP_TABLE default\n")
+            for v in scalars:
+                f.write(f"{v}\n")
+        logger.info(f"Wrote surface with {len(P)} points to {output_vtk_file}")

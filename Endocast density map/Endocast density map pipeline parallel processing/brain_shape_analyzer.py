@@ -33,6 +33,27 @@ logging.basicConfig(
 logger = logging.getLogger("BrainShapeAnalyzer")
 
 
+def _available_cpus() -> int:
+    try:
+        return len(os.sched_getaffinity(0))   # CPUs this process may use (correct inside a Slurm job)
+    except AttributeError:
+        import multiprocessing
+        return multiprocessing.cpu_count()
+
+
+DEFAULT_WORKERS = max(1, _available_cpus() - 1)  # Step 2 specimens at the same time if the config has no "num_workers" (leave one CPU free)
+
+
+def get_num_workers(config: Dict[str, Any]) -> int:
+    """Number of specimens registered at the same time in Step 2: config "num_workers", else the
+    number of CPUs given to a Slurm job (Curta), else DEFAULT_WORKERS."""
+    if config.get("num_workers"):
+        return int(config["num_workers"])
+    if os.environ.get("SLURM_CPUS_PER_TASK"):
+        return int(os.environ["SLURM_CPUS_PER_TASK"])
+    return DEFAULT_WORKERS
+
+
 def load_config(config_file: str) -> Dict[str, Any]:
     """
     Load configuration from JSON file.
@@ -81,6 +102,8 @@ def create_default_config(output_file: str) -> None:
             "data/curves3.csv"
         ],
         "ref_surface_file": "data/reference_surface.vtk",
+        "num_workers": 1,
+        "surface_threshold": 8.0,
         "mean_estim_params": {
             "it_nb": 20
         },
@@ -192,9 +215,10 @@ def analyze_sulci_variability(config: Dict[str, Any], average_im: np.ndarray) ->
     Returns:
         List of deformed point sets
     """
-    # Check required inputs
-    if not config.get("input_curve_files") or not config.get("ref_surface_file"):
-        logger.warning("Skipping sulci variability analysis (missing curve files or reference surface)")
+    # Check required inputs (Nov 2026: the reference surface is now optional; the average surface is
+    # built from the average image)
+    if not config.get("input_curve_files"):
+        logger.warning("Skipping sulci variability analysis (missing curve files)")
         return []
     
     # Set up parameters
@@ -214,7 +238,11 @@ def analyze_sulci_variability(config: Dict[str, Any], average_im: np.ndarray) ->
         average_im,
         config["input_image_files"],
         config["input_curve_files"],
-        config["ref_surface_file"]
+        config.get("ref_surface_file"),
+        output_dir=config["output_dir"],
+        num_workers=get_num_workers(config),
+        input_surface_files=config.get("input_surface_files"),
+        surface_threshold=config.get("surface_threshold", 8.0)
     )
     
     # Additional analysis and visualization
