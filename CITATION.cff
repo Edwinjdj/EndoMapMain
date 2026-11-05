@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the article below."
+title: "EndoMapMain: sulcal mapping tools for cranial endocasts"
+type: software
+authors:
+  - family-names: "de Jager"
+    given-names: "Edwin J."
+repository-code: "https://github.com/Edwinjdj/EndoMapMain"
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "de Jager"
+      given-names: "Edwin J."
+    - family-names: "Risser"
+      given-names: "Laurent"
+    - family-names: "Mescam"
+      given-names: "Muriel"
+    - family-names: "Fonta"
+      given-names: "Caroline"
+    - family-names: "Beaudet"
+      given-names: "Amélie"
+  title: "Sulci 3D mapping from human cranial endocasts: A powerful tool to study hominin brain evolution"
+  journal: "Human Brain Mapping"
+  volume: 43
+  issue: 14
+  start: 4433
+  end: 4443
+  year: 2022
+  doi: "10.1002/hbm.25964"
