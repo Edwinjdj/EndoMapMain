@@ -14,7 +14,7 @@ The **Cite this repository** button on the right of this page gives this referen
 |---|---|
 | `Endocast density map/` | Builds an average endocast from a sample (step 1) and maps every specimen's labelled sulci onto it to make sulcal density (probability) maps (step 2). Two versions: `Endocast density map pipeline` and `Endocast density map pipeline parallel processing` (registers several specimens at the same time). See the `readme` in each folder for installation and use. |
 | `Composite Variability/` | Plots from the density-map output (`sulci_report.txt`): occurrence rate and positional variability per sulcus, left and right. |
-| `Endocast registration with lineset/` | Aligns endocast meshes to a reference endocast (RANSAC + ICP, Open3D) and applies the same transform to their left and right sulcal curve sets. |
+| `Endocast registration with lineset/` | `registrationandlinesets4_scaling.py`: aligns endocast meshes (.ply) to a reference endocast and applies the same transform to their left and right sulcal curve sets (linesets). Coarse alignment with RANSAC on FPFH features, then refined with ICP (Open3D). Both steps allow rotation, translation and one overall scale factor, so endocasts of different sizes (e.g. fossil and extant) can be aligned. Set the reference, input and output folders in the `sys.argv` block at the end of the script. |
 
 ## Contact
 
