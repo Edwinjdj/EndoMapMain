@@ -1,6 +1,6 @@
 # EndoMapMain
 
-Tools for mapping sulcal imprints on cranial endocasts and comparing them across individuals, developed by Edwin J. de Jager.
+Tools for mapping sulcal imprints on cranial endocasts and comparing them across individuals.
 
 ## If you use this code, please cite
 
