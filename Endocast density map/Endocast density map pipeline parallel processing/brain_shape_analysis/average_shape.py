@@ -134,7 +134,13 @@ class BrainShapeAnalysis:
                 average_f_z = np.copy(loc_reg_mz)
                 
                 # Determine number of workers (cores to use)
-                num_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one core free
+                # Leave one core free. Nov 2026: count the CPUs this process may actually use (on Curta,
+                # cpu_count() gives the whole node, not the CPUs given to the job)
+                try:
+                    n_cpus = len(os.sched_getaffinity(0))
+                except AttributeError:
+                    n_cpus = multiprocessing.cpu_count()
+                num_workers = max(1, n_cpus - 1)
                 logger.info(f"Using {num_workers} workers for parallel processing")
 
                 # Process images in parallel

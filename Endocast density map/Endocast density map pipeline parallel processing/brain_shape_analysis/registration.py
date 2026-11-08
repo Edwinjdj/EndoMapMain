@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 # Set up logging
+SLAB_SIZE = 25  # planes per slab in transport_image / trilinear_interpolation (any value gives the same result)
+
 logger = logging.getLogger("Registration")
 
 @dataclass
@@ -22,42 +24,35 @@ class ImageRegistration:
     def transport_image(imov: np.ndarray, mx: np.ndarray, my: np.ndarray, mz: np.ndarray) -> np.ndarray:
         """
         Transport a moving image according to displacement fields.
-        
+        Nearest-voxel lookup: idef[i,j,k] = imov[i+mx+0.5, j+my+0.5, k+mz+0.5] (clipped to the grid).
+
+        Nov 2026: same arithmetic as before, done in slabs of SLAB_SIZE planes so it needs far less
+        memory (the old version built several full-size index grids at once). Results are identical.
+
         Args:
             imov: Moving image
             mx, my, mz: Displacement fields
-            
+
         Returns:
             Deformed image
         """
         try:
             nx, ny, nz = np.shape(imov)
             idef = np.zeros((nx, ny, nz))
-            j, i, k = np.meshgrid(range(ny), range(nx), range(nz), indexing='ij')
-            i, j, k = i.transpose(1, 0, 2), j.transpose(1, 0, 2), k.transpose(1, 0, 2)
-            
-            # Calculate new indices
-            l = (i + mx[i, j, k] + 0.5)
-            m = (j + my[i, j, k] + 0.5)
-            n = (k + mz[i, j, k] + 0.5)
-            
-            # Boundary conditions
-            l = np.clip(l, 0, nx-1)
-            m = np.clip(m, 0, ny-1)
-            n = np.clip(n, 0, nz-1)
-            
-            l = l.astype(int)
-            m = m.astype(int)
-            n = n.astype(int)
-            
-            # Apply displacement
-            idef[i, j, k] = imov[l[i, j, k], m[i, j, k], n[i, j, k]]
-            
+            J = np.arange(ny)[None, :, None]
+            K = np.arange(nz)[None, None, :]
+            for a in range(0, nx, SLAB_SIZE):
+                b = min(nx, a + SLAB_SIZE)
+                I = np.arange(a, b)[:, None, None]
+                l = np.clip(I + mx[a:b] + 0.5, 0, nx - 1).astype(int)
+                m = np.clip(J + my[a:b] + 0.5, 0, ny - 1).astype(int)
+                n = np.clip(K + mz[a:b] + 0.5, 0, nz - 1).astype(int)
+                idef[a:b] = imov[l, m, n]
             return idef
         except Exception as e:
             logger.error(f"Error in transport_image: {str(e)}")
             raise
-    
+
     @staticmethod
     def ssd(i: np.ndarray, j: np.ndarray) -> float:
         """Calculate Sum of Squared Differences between two images."""
@@ -68,84 +63,47 @@ class ImageRegistration:
                              fx: np.ndarray, fy: np.ndarray, fz: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Trilinear interpolation for force fields.
-        
+
+        Nov 2026: same arithmetic as before (including the edge handling), done in slabs of
+        SLAB_SIZE planes to save memory. Results are identical.
+
         Args:
             mx, my, mz: Displacement fields
             fx, fy, fz: Force fields
-            
+
         Returns:
             Interpolated force fields
         """
         try:
             nx, ny, nz = np.shape(mx)
-            j, i, k = np.meshgrid(range(ny), range(nx), range(nz), indexing='ij')
-            i, j, k = i.transpose(1, 0, 2), j.transpose(1, 0, 2), k.transpose(1, 0, 2)
-            
-            # Create new indices
-            l = (i + mx[i, j, k])
-            m = (j + my[i, j, k])
-            n = (k + mz[i, j, k])
-            
-            # Boundary conditions
-            l = np.clip(l, 0, nx-1.01)
-            m = np.clip(m, 0, ny-1.01)
-            n = np.clip(n, 0, nz-1.01)
-            
-            fl = np.floor(l).astype(int)
-            fm = np.floor(m).astype(int)
-            fn = np.floor(n).astype(int)
-            
-            cl = fl + 1
-            cm = fm + 1
-            cn = fn + 1
-            
-            # Ensure indices are within bounds
-            cl = np.minimum(cl, nx-1)
-            cm = np.minimum(cm, ny-1)
-            cn = np.minimum(cn, nz-1)
-            
-            cx = cl - l
-            cy = cm - m
-            cz = cn - n
-            
-            # Compute interpolation for Fx
-            fx_x1 = fx[fl, fm, fn] * cx + fx[np.minimum(fl+1, nx-1), fm, fn] * (1 - cx)
-            fx_x2 = fx[fl, np.minimum(fm+1, ny-1), fn] * cx + fx[np.minimum(fl+1, nx-1), np.minimum(fm+1, ny-1), fn] * (1 - cx)
-            fx_x3 = fx[fl, fm, np.minimum(fn+1, nz-1)] * cx + fx[np.minimum(fl+1, nx-1), fm, np.minimum(fn+1, nz-1)] * (1 - cx)
-            fx_x4 = fx[fl, np.minimum(fm+1, ny-1), np.minimum(fn+1, nz-1)] * cx + fx[np.minimum(fl+1, nx-1), np.minimum(fm+1, ny-1), np.minimum(fn+1, nz-1)] * (1 - cx)
-            
-            fx_y1 = fx_x1 * cy + fx_x2 * (1 - cy)
-            fx_y2 = fx_x3 * cy + fx_x4 * (1 - cy)
-            
-            fx_z = fx_y1 * cz + fx_y2 * (1 - cz)
-            
-            # Compute interpolation for Fy
-            fy_x1 = fy[fl, fm, fn] * cx + fy[np.minimum(fl+1, nx-1), fm, fn] * (1 - cx)
-            fy_x2 = fy[fl, np.minimum(fm+1, ny-1), fn] * cx + fy[np.minimum(fl+1, nx-1), np.minimum(fm+1, ny-1), fn] * (1 - cx)
-            fy_x3 = fy[fl, fm, np.minimum(fn+1, nz-1)] * cx + fy[np.minimum(fl+1, nx-1), fm, np.minimum(fn+1, nz-1)] * (1 - cx)
-            fy_x4 = fy[fl, np.minimum(fm+1, ny-1), np.minimum(fn+1, nz-1)] * cx + fy[np.minimum(fl+1, nx-1), np.minimum(fm+1, ny-1), np.minimum(fn+1, nz-1)] * (1 - cx)
-            
-            fy_y1 = fy_x1 * cy + fy_x2 * (1 - cy)
-            fy_y2 = fy_x3 * cy + fy_x4 * (1 - cy)
-            
-            fy_z = fy_y1 * cz + fy_y2 * (1 - cz)
-            
-            # Compute interpolation for Fz
-            fz_x1 = fz[fl, fm, fn] * cx + fz[np.minimum(fl+1, nx-1), fm, fn] * (1 - cx)
-            fz_x2 = fz[fl, np.minimum(fm+1, ny-1), fn] * cx + fz[np.minimum(fl+1, nx-1), np.minimum(fm+1, ny-1), fn] * (1 - cx)
-            fz_x3 = fz[fl, fm, np.minimum(fn+1, nz-1)] * cx + fz[np.minimum(fl+1, nx-1), fm, np.minimum(fn+1, nz-1)] * (1 - cx)
-            fz_x4 = fz[fl, np.minimum(fm+1, ny-1), np.minimum(fn+1, nz-1)] * cx + fz[np.minimum(fl+1, nx-1), np.minimum(fm+1, ny-1), np.minimum(fn+1, nz-1)] * (1 - cx)
-            
-            fz_y1 = fz_x1 * cy + fz_x2 * (1 - cy)
-            fz_y2 = fz_x3 * cy + fz_x4 * (1 - cy)
-            
-            fz_z = fz_y1 * cz + fz_y2 * (1 - cz)
-            
-            return fx_z, fy_z, fz_z
+            out = [np.empty_like(fx), np.empty_like(fy), np.empty_like(fz)]
+            J = np.arange(ny)[None, :, None]
+            K = np.arange(nz)[None, None, :]
+            for a in range(0, nx, SLAB_SIZE):
+                b = min(nx, a + SLAB_SIZE)
+                I = np.arange(a, b)[:, None, None]
+                # New indices and boundary conditions
+                l = np.clip(I + mx[a:b], 0, nx - 1.01)
+                m = np.clip(J + my[a:b], 0, ny - 1.01)
+                n = np.clip(K + mz[a:b], 0, nz - 1.01)
+                fl = np.floor(l).astype(int); fm = np.floor(m).astype(int); fn = np.floor(n).astype(int)
+                cx = np.minimum(fl + 1, nx - 1) - l
+                cy = np.minimum(fm + 1, ny - 1) - m
+                cz = np.minimum(fn + 1, nz - 1) - n
+                fl1 = np.minimum(fl + 1, nx - 1); fm1 = np.minimum(fm + 1, ny - 1); fn1 = np.minimum(fn + 1, nz - 1)
+                for o, f in zip(out, (fx, fy, fz)):
+                    x1 = f[fl, fm, fn] * cx + f[fl1, fm, fn] * (1 - cx)
+                    x2 = f[fl, fm1, fn] * cx + f[fl1, fm1, fn] * (1 - cx)
+                    x3 = f[fl, fm, fn1] * cx + f[fl1, fm, fn1] * (1 - cx)
+                    x4 = f[fl, fm1, fn1] * cx + f[fl1, fm1, fn1] * (1 - cx)
+                    y1 = x1 * cy + x2 * (1 - cy)
+                    y2 = x3 * cy + x4 * (1 - cy)
+                    o[a:b] = y1 * cz + y2 * (1 - cz)
+            return out[0], out[1], out[2]
         except Exception as e:
             logger.error(f"Error in trilinear_interpolation: {str(e)}")
             raise
-    
+
     @staticmethod
     def det_jac(mx: np.ndarray, my: np.ndarray, mz: np.ndarray) -> Tuple[float, float]:
         """
@@ -210,10 +168,13 @@ class ImageRegistration:
         """
         try:
             # Calculate forces using gradient
+            # (same arithmetic as before; the difference image is computed once and the
+            #  gradients are freed as soon as they are used, to save memory)
             gx, gy, gz = np.gradient(i_d)
-            fx = 2 * (i_f - i_d) * gx
-            fy = 2 * (i_f - i_d) * gy
-            fz = 2 * (i_f - i_d) * gz
+            diff = 2 * (i_f - i_d)
+            fx = diff * gx; del gx
+            fy = diff * gy; del gy
+            fz = diff * gz; del gz, diff
             
             # Trilinear interpolation
             fx, fy, fz = ImageRegistration.trilinear_interpolation(mx, my, mz, fx, fy, fz)
