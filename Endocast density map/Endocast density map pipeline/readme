@@ -27,6 +27,21 @@ python brain_shape_analyzer.py run my_config.json
 
 The JSON file contains machine-specific paths, so it's not directly transferable between computers. This approach of regenerating the configuration ensures that all paths are correct for the new environment.
 
+SCALING IS ESSENTIAL (note added 20 Nov 2026)
+---------------------------------------------
+Every endocast must be aligned AND scaled (one overall, isotropic scale factor, together with rotation and
+translation) before it enters this pipeline - the extant specimens as well as any fossil added later
+(e.g. with Endocast registration with lineset/registrationandlinesets4_scaling.py).
+- Why: scaling removes overall size, so the demons registration only has to correct shape, and the average,
+  the density maps and any specimen moved onto them compare shape and position, not size. Without it the size
+  difference alone (several mm at the frontal and occipital ends) would exceed what the registration corrects
+  (about 5 mm with v1=10, v2=1, 20 iterations), and sulci near the ends would land in the wrong place.
+- Consequence: no size comparison can be made after scaling. Lengths, distances and areas measured on the
+  average or on a specimen moved onto it are in the average's size, not the specimen's own millimetres.
+  Measure size (endocranial volume, sulcus lengths in mm) on the original, unscaled meshes.
+- Record the scale factor S of every specimen (in its transform file), so a distance on the average can be
+  converted back to the specimen's own millimetres (divide by S).
+
 CHANGES, NOVEMBER 2026 (branch density-map-fixes)
 -------------------------------------------------
 Step 1 (the average, Result_defImage.nii) is unchanged. Step 2 (sulci -> average, density maps) was fixed:
