@@ -18,6 +18,10 @@ def parse_arguments():
     parser.add_argument("--ransac-iter", type=int, default=100000, help="Number of RANSAC iterations")
     parser.add_argument("--no-preview", action="store_true", help="Skip alignment preview")
     parser.add_argument("--output-dir", type=str, default="", help="Directory to save output files")
+    parser.add_argument("--fixed-scale", type=float, default=None,
+                        help="Scale factor S chosen by you (e.g. 0.944). The endocast is scaled by S about its centroid and "
+                             "then aligned with rotation + translation only; S becomes part of the saved transform and is "
+                             "applied to the linesets like the rest. Default: S is fitted by RANSAC + ICP.")
     return parser.parse_args()
 
 def find_associated_linesets(endocast_file, input_dir, left_suffix, right_suffix):
@@ -170,7 +174,7 @@ def compute_fpfh_features(pcd, voxel_size):
     print(f"FPFH computation completed in {time.time() - start_time:.2f} seconds")
     return fpfh
 
-def global_alignment(source, target, voxel_size, ransac_iter=100000):
+def global_alignment(source, target, voxel_size, ransac_iter=100000, allow_scaling=True):
     """Performs global alignment using FPFH features and RANSAC."""
     print(f"Performing global alignment (RANSAC iterations: {ransac_iter})...")
     start_time = time.time()
@@ -199,7 +203,7 @@ def global_alignment(source, target, voxel_size, ransac_iter=100000):
         source_fpfh, target_fpfh,
         mutual_filter=True,
         max_correspondence_distance=distance_threshold,
-        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(True),  # True = allow isotropic scale (fossil<->extant)
+        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(allow_scaling),  # True = allow isotropic scale (fossil<->extant); False with --fixed-scale
         ransac_n=4,
         checkers=checkers,
         criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(ransac_iter, 0.999)
@@ -211,7 +215,7 @@ def global_alignment(source, target, voxel_size, ransac_iter=100000):
 
     return result.transformation
 
-def refine_alignment(source, target, transformation, voxel_size):
+def refine_alignment(source, target, transformation, voxel_size, allow_scaling=True):
     """Refines alignment using multi-scale ICP for higher accuracy."""
     print("Refining alignment with multi-scale ICP...")
     start_time = time.time()
@@ -227,7 +231,7 @@ def refine_alignment(source, target, transformation, voxel_size):
         
         result = o3d.pipelines.registration.registration_icp(
             source, target, threshold, current_transformation,
-            o3d.pipelines.registration.TransformationEstimationPointToPoint(True),  # scaling ICP; was PointToPlane (rigid, dropped scale)
+            o3d.pipelines.registration.TransformationEstimationPointToPoint(allow_scaling),  # scaling ICP (rigid with --fixed-scale); was PointToPlane
             o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=1000)
         )
         
@@ -622,6 +626,16 @@ def process_endocast(endocast_file, reference_mesh, left_linesets, right_lineset
     
     # Save a copy of the original mesh vertices for verification
     original_vertices = np.asarray(endocast_mesh.vertices).copy()
+
+    # Fixed scale (--fixed-scale S): scale the endocast about its centroid BEFORE alignment. The scale matrix is the
+    # first part of combined_transform, so it is saved in *_transform.txt and applied to the linesets with the rest.
+    scale_matrix = np.eye(4)
+    if args.fixed_scale is not None:
+        centre = original_vertices.mean(axis=0)
+        scale_matrix[:3, :3] *= args.fixed_scale
+        scale_matrix[:3, 3] = centre - args.fixed_scale * centre
+        endocast_mesh = apply_transformation(endocast_mesh, scale_matrix)
+        print(f"Fixed scale: endocast scaled by S = {args.fixed_scale} about its centroid; alignment will be rigid")
     
     # Proceed with automatic voxel size detection and alignment
     reference_raw_pcd, auto_voxel_size = mesh_to_point_cloud(reference_mesh)
@@ -633,8 +647,8 @@ def process_endocast(endocast_file, reference_mesh, left_linesets, right_lineset
     reference_pcd = preprocess_point_cloud(reference_raw_pcd, voxel_size)
     endocast_pcd = preprocess_point_cloud(endocast_raw_pcd, voxel_size)
 
-    # Initialize combined transformation matrix
-    combined_transform = np.eye(4)
+    # Initialize combined transformation matrix (starts with the fixed scale, identity if none)
+    combined_transform = scale_matrix.copy()
     
     # Ask user if they want to manually align first
     manual_prompt = input("\n🛠️  Do you want to manually align the endocast to the reference? (yes/no): ").strip().lower()
@@ -643,7 +657,7 @@ def process_endocast(endocast_file, reference_mesh, left_linesets, right_lineset
         manual_transform = manual_alignment_gui(reference_pcd, endocast_pcd)
         
         # Update combined transformation
-        combined_transform = manual_transform.copy()
+        combined_transform = manual_transform @ combined_transform
     
         # Apply the manual transformation to both the mesh and point cloud
         endocast_mesh = apply_transformation(endocast_mesh, manual_transform)
@@ -652,8 +666,9 @@ def process_endocast(endocast_file, reference_mesh, left_linesets, right_lineset
 
     # Compute alignment transformation
     print("\n==== ALIGNMENT PROCESS ====")
-    global_transform = global_alignment(endocast_pcd, reference_pcd, voxel_size, args.ransac_iter)
-    final_transform = refine_alignment(endocast_pcd, reference_pcd, global_transform, voxel_size)
+    allow_scaling = args.fixed_scale is None
+    global_transform = global_alignment(endocast_pcd, reference_pcd, voxel_size, args.ransac_iter, allow_scaling)
+    final_transform = refine_alignment(endocast_pcd, reference_pcd, global_transform, voxel_size, allow_scaling)
     
     # Update combined transformation
     combined_transform = final_transform @ combined_transform
@@ -683,6 +698,9 @@ def process_endocast(endocast_file, reference_mesh, left_linesets, right_lineset
     # Save transformation matrix (the combined transform)
     transform_matrix_path = os.path.join(output_dir, f"{endocast_basename}_transform.txt")
     save_transformation_matrix(combined_transform, transform_matrix_path)
+    total_scale = np.cbrt(np.linalg.det(combined_transform[:3, :3]))
+    print(f"Overall scale S in the saved transform: {total_scale:.4f}"
+          + (" (fixed)" if args.fixed_scale is not None else " (fitted) - check it is plausible"))
     
     # Sanity check - verify that applying the combined transform to the original vertices
     # gives the same result as the aligned mesh vertices
@@ -785,7 +803,8 @@ sys.argv = [
     '--reference', r'I:\2025\Conferences and Talks\EAAPP 2026\New folder\Reference human\human_reference.ply',
     '--input-dir', r'I:\2025\Conferences and Talks\EAAPP 2026\New folder\Homo',
     '--output-dir', r'I:\2025\Conferences and Talks\EAAPP 2026\New folder\Homo alighned human',
-    '--endocast-pattern', '*.ply'  # ✅ include all .ply files in folder
+    '--endocast-pattern', '*.ply',  # ✅ include all .ply files in folder
+    # '--fixed-scale', '0.944',     # uncomment to use your own scale S (rigid alignment); default = S fitted
 ]
     
 main()
